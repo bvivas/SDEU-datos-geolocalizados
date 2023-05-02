@@ -1,0 +1,639 @@
+---
+title: "Taxis de Nueva York"
+author: "Martín Salinas Antón y Belén Vivas García"
+date: "12 Mayo de 2023"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+  html_notebook: default
+---
+
+```{r global_options, include=FALSE}
+rm(list=ls()) 
+library(knitr)
+opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+# Inicialización
+
+El siguiente código ha sido probado con `r R.version.string` y RStudio 1.2.240
+
+Primeramente, es necesario cargar todas las bibliotecas que se van a emplear durante el proyecto.
+
+```{r results="hide"}
+library(tidyverse)
+library(cowplot)
+library(hexbin)
+library(lubridate)
+library(scales)
+
+#theme_set(theme_cowplot(font_size=12)) # reduce default font size
+```
+
+Recordar que es preciso instalar previamente aquellas bibliotecas que no estuvieran disponibles. Por ejemplo:
+
+```         
+install.packages("tidyverse")
+```
+
+Cargamos también funciones que nos son útiles en la última parte de la práctica. La función permite `gcd_slc` calcula la distancia geodésica entre dos puntos definidos en coordenadas cartesianas. Precisa de la función `deg2rad` para convertir dichas coordenadas de grados a radianes.
+
+```{r results="hide"}
+# source: https://www.r-bloggers.com/great-circle-distance-calculations-in-r/
+# Convert degrees to radians
+deg2rad <- function(deg) {
+    return(deg*pi/180)
+}
+
+# Calculates the great-circle distance (gdc), also called geodesic distance, 
+# between two points specified by radian latitude/longitude using the Spherical 
+# Law of Cosines (slc) The Spherical Law of Cosines performs well as long as the
+# distance is not to small (some sources claim it’s accuracy deteriorates at
+# about the 1 metre scale). 
+# Return distance in Km
+gcd_slc <- function(long1, lat1, long2, lat2) {
+    # Convert degrees to radians
+    long1 <- deg2rad(long1)
+    lat1 <- deg2rad(lat1)
+    long2 <- deg2rad(long2)
+    lat2 <- deg2rad(lat2)
+    
+    R <- 6371 # Earth mean radius [km]
+    d <- acos(sin(lat1)*sin(lat2) + cos(lat1)*cos(lat2) * cos(long2-long1)) * R
+    return(d) # Distance in km
+}
+```
+
+# Carga y limpieza de datos
+
+El conjunto de datos que vamos a utilizar contiene los viajes realizados el día 14 de enero de 2013, y se puede descargar desde:
+
+<https://www.dropbox.com/s/nmtodtuvpb8f87d/trip_data_2013-01-14.csv?dl=1>
+
+Una vez descargado el fichero, se recomienda incluirlo dentro de un carpeta *data* dentro del directorio donde se haya descargado este *notebook*. La función <code>read_csv</code> permite carga el archivo CSV en un *data frame* infiriendo automáticamente el tipo de datos de cada columna.
+
+```{r}
+df <- read_csv("data/trip_data_2013-01-14.csv")
+```
+
+El *dataset* tiene los siguientes campos:
+
+```{r}
+colnames(df)
+```
+
+-   **medallion**: la licencia que permite identificar a cada taxi. Más información en <https://en.wikipedia.org/wiki/Taxicabs_of_New_York_City#Medallions>
+-   **hack_license**: concesión otorgada a un taxista por la ciudad de NY para poder operar un taxi amarillo (los famosos Yellow Cabs). Se puede utilizar como identificador del conductor. Más información en <http://nycitycab.com/HackLicense.aspx>\
+-   **vendor_id**: identificador del proveedor tecnológico que suministra el sistema de recolección de datos sobre cada viaje. Por ejemplo, Verifone Transportation Systems (VTS), o Mobile Knowledge Systems Inc (CMT).
+-   **rate_code**: tarifa a aplicar. Más información en <http://www.nyc.gov/html/tlc/html/passenger/taxicab_rate.shtml>
+-   **store_and_fwd_flag**: atributo que se desconoce su utilidad.
+-   **pickup_datetime**: hora de comienzo del viaje, aaaa-mm-dd hh24:mm:ss EDT.
+-   **dropoff_datetime**: hora de fin del viaje, aaaa-mm-dd hh24:mm:ss EDT.
+-   **passenger_count**: número de pasajeros siendo el valor por defecto de uno.
+-   **trip_time_in_secs**: duración del viaje en segundos.
+-   **trip_distance**: distancia del viaje en millas.
+-   **pickup_longitude / pickup_latitude**: coordenadas GPS del origen del viaje.
+-   **dropoff_longitude / dropoff_latitude**: coordenadas GPS del destino del viaje.
+
+Las marcas de tiempo están referidas al uso horario *Eastern Daylight Time* (EDT) que es donde está ubicado Nueva York, y que corresponde cuatro horas menos respecto a *Coordinated Universal Time* (UTC). Aunque en nuestro caso no afecta, hay que tener en cuanta que los "medallones" y las licencias se reasignan cada año imposibilitando seguir a un mismo conductor o vehículo más allá del año.
+
+```{=html}
+<!-- 
+Explicación en 
+https://publish.illinois.edu/dbwork/open-data/
+-->
+```
+# Limpiar registros con datos incorrectos
+
+Antes de comezar cualquier análisis hay que asegurar que el conjunto de datos no contenga valores absurdos. La función <code>summary</code> extrae un resumen parámetros donde se pueden ver rápidamente los valores mínimos y máximos, así como la distribución por cuantiles de los mismos.
+
+```{r}
+summary(df)
+```
+
+Es nececario entender bien cada variable, incluyendo las unidades si las hubiera y su tipo de datos. Una manera de visualizar la distribución es empleando la función de distribución acumulada empírica (*ECDF*) que muestra la probabilidad (eje y) de que una variable tenga un valor menor o igual que x. Aunque su interpretación es menos intuitiva que un histograma, la visualización es más robusta en cuanto que no depende de un parámetro como puede ser el tamaño del intervalo. En las dos gráficas que se muestran abajo queda claro que tanto la longitud como la latitud tiene un amplio rango de valores que están fuera de lo esperado.
+
+```{r}
+plot1 <- ggplot(df, aes(x=pickup_longitude)) + stat_ecdf()
+plot2 <- ggplot(df, aes(x=pickup_latitude)) + stat_ecdf()
+plot_grid(plot1, plot2, labels = c('lon', 'lat'))
+```
+
+> Q: ¿Qué variables son susceptibles de tener valores incompatibles?
+
+------------------------------------------------------------------------
+
+Dos variables que podrían tener valores incompatibles son `pickup_datetime` y `dropoff_datetime` en caso de que la marca de tiempo de la segunda variable sea menor que la de la primera, ya que indicaría que la hora de fin de viaje habría sucedido antes del inicio, lo cual es absolutamente imposible. Además, la fecha de llegada tendrá que estar necesariamente entre 2013-01-14 00:00:00.00 y 2013-01-14 23:59:59.00. La fecha de salida podría empezar en el día anterior, 2013-01-13, siempre que la de llegada sea el día 14.
+
+En segundo lugar, `trip_distance` tendrá que ser un valor positivo mayor de 0. No puede haber distancias negativas.
+
+Las variables relacionadas con la latitud y la longitud deberán estar dentro del rango de latitud y longitud de la ciudad de Nueva York.
+
+La variable `rate_code` deberá tener un valor entero y positivo. No puede haber una tarifa con un valor decimal ni negativo.
+
+El número de pasajeros, `passenger_count` tendrá que estar entre 1 y 6. Si tiene 0 pasajeros, las variables relacionadas con las tarifas no tendrían sentido.
+
+`trip_time_in_secs` deberá ser mayor que 0 y ser un número entero.
+
+------------------------------------------------------------------------
+
+Por ejemplo, ¿tiene sentido que la distancia del viaje o que el tiempo del viaje sea 0?. Una vez identificadas es necesario definir que acciones tomar con estos valores. Una estrategia es imputarle un valor. Por ejemplo, la distancia de viaje se puede aproximar por la distancia desde el origen al destino. El tiempo de viaje se puede hallar la velocidad media, y calcular el tiempo con la distancia. Se puede ser más conservador y cambiar los valores que no son aceptables por <code>NA</code> (Not Avaliable).
+
+Esta segunda estrategia es la que se va a seguir en cada una de las variables. Una primera transformación va a ser sustituir aquellas coordenadas de recogida o bajada de pasajeros que no corresponde a la ciudad de Nueva York. Una manera bastante sencilla de delimitar el área de la ciudad es mediante un rectángulo o *bounding box*. Este rectángulo se puede localizar directamente a través de Internet.
+
+> Q: ¿Cual es el *bounding box* de NY?
+
+```{r}
+# Incluir las coordenadas correspondientes, y ejecutar el trozo de código
+nw <- list(lat = 40.917577, lon = -74.259090)
+se <- list(lat = 40.477399, lon = -73.700272)
+```
+
+Una vez definido el *bounding box* se sustituye por <code>NA</code> cualquier coordenada que se encuentre fuera.
+
+```{r}
+# set coordinates outside of NYC bounding box to NA
+df <- df %>% 
+        mutate(pickup_longitude = replace(pickup_longitude,
+                                           which(pickup_longitude < nw$lon 
+                                                 | pickup_longitude > se$lon),
+                                           NA)) %>%
+        mutate(pickup_latitude = replace(pickup_latitude,
+                                           which(pickup_latitude < se$lat 
+                                                 | pickup_latitude > nw$lat),
+                                           NA)) %>%
+        mutate(dropoff_longitude = replace(dropoff_longitude,
+                                           which(dropoff_longitude < nw$lon 
+                                                 | dropoff_longitude > se$lon),
+                                           NA)) %>%
+        mutate(dropoff_latitude = replace(dropoff_latitude,
+                                           which(dropoff_latitude < se$lat 
+                                                 | dropoff_latitude > nw$lat),
+                                           NA))
+```
+
+> T: Realizar transformaciones similares en el resto de atributos que lo necesiten
+
+------------------------------------------------------------------------
+
+```{r}
+df <- df %>%
+  # Trip distance greater than 0
+  mutate(trip_distance = replace(trip_distance,
+                                 which(trip_distance <= 0),
+                                 NA)) %>%
+  # Trip time in secs greater than 0
+  mutate(trip_time_in_secs = replace(trip_time_in_secs,
+                                     which(trip_time_in_secs <= 0),
+                                     NA)) %>%
+  # Rate code greater than 0
+  mutate(rate_code = replace(rate_code,
+                             which(rate_code <= 0),
+                             NA)) %>%
+  # Passenger count between 1 and 6
+  mutate(passenger_count = replace(passenger_count,
+                                   which(passenger_count < 1
+                                         | passenger_count > 6),
+                                   NA))
+```
+
+y en total cuantos registros han sido afectados. Antes eliminamos el atributo *store_and_fwd_flag* ya que tiene un número elevado de <code>NA</code>, y además no sabemos interpretar.
+
+```{r}
+df <- df %>% select(-store_and_fwd_flag)
+table(complete.cases(df))
+```
+
+> Q: ¿Cuál es porcentaje de registros que contienen algún campo invalidos (NA) sin contar store_and_fwd_flag? ¿Existe alguna variable que tenga un número de valores inválidos superior al 10%?
+
+```{r}
+# Get number of records with an NA
+incomplete_records <- sum(!complete.cases(df))
+# Get number of complete records
+complete_records <- sum(complete.cases(df))
+# Compute percentage of incomplete records
+(incomplete_records / (incomplete_records + complete_records)) * 100
+```
+
+El 2.53% de los registros contiene algún campo inválido.
+
+```{r}
+n_rows <- nrow(df)
+
+sprintf("Medallion: %f%%", (sum(is.na(df$medallion)) / n_rows) * 100)
+sprintf("Hack license: %f%%", (sum(is.na(df$hack_license)) / n_rows) * 100)
+sprintf("Vendor id: %f%%", (sum(is.na(df$vendor_id)) / n_rows) * 100)
+sprintf("Rate code: %f%%", (sum(is.na(df$rate_code)) / n_rows) * 100)
+sprintf("Pickup datetime: %f%%", (sum(is.na(df$pickup_datetime)) / n_rows) * 100)
+sprintf("Dropoff datetime: %f%%", (sum(is.na(df$dropoff_datetime)) / n_rows) * 100)
+sprintf("Trip time in secs: %f%%", (sum(is.na(df$trip_time_in_secs)) / n_rows) * 100)
+sprintf("Trip distance: %f%%", (sum(is.na(df$trip_distance)) / n_rows) * 100)
+sprintf("Pickup longitude: %f%%", (sum(is.na(df$pickup_longitude)) / n_rows) * 100)
+sprintf("Pickup latitude: %f%%", (sum(is.na(df$pickup_latitude)) / n_rows) * 100)
+sprintf("Dropoff longitude: %f%%", (sum(is.na(df$dropoff_longitude)) / n_rows) * 100)
+sprintf("Dropoff latitude: %f%% ", (sum(is.na(df$dropoff_latitude)) / n_rows) * 100)
+```
+
+Ninguna variable tiene un número de valores inválidos superior al 10%. La variable que más valores inválidos tiene es `dropoff_longitude`, con un 1.95% de NA.
+
+# Exploración inicial
+
+Una vez dispuesto un conjunto de datos limpios vamos a comenzar con una serie de preguntas básicas que permiten entender un poco más en detalle cómo conducen los taxista en Nueva York.
+
+> Q: ¿Cuantos viajes se hacen en promedio por un mismo taxista? ¿y cómo máximo?
+
+Esta pregunta se puede responder mediante la función <code>summary</code> o gráficamente pintando tanto la *ecdf* como el histograma. En todos los casos, es preciso primero contabilizar el número de viajes que hace cada taxista para lo cual se emplea la función <code>table</code>
+
+```{r}
+hack_license <- as.data.frame(table(df$hack_license))
+plot1 <- ggplot(hack_license, aes(Freq)) + stat_ecdf()
+plot2 <- ggplot(hack_license, aes(Freq)) + geom_histogram(binwidth = 5)
+plot_grid(plot1, plot2, labels = c("ecdf", "hist"))
+```
+
+------------------------------------------------------------------------
+
+Observando las gráficas, podemos ver que, en promedio, un taxista realiza alrededor de 20 viajes. Si nos fijamos en el hisotgrama, más de 5000 taxistas hacen alrededor de 20 viajes, y en el `ecdf` el 50% de los valores (taxistas) hacen 20 viajes o menos.
+
+Hacemos la media de las frecuencias para comprobarlo:
+
+```{r}
+mean(hack_license$Freq)
+```
+
+La media es 19.41856, por lo que confirmamos que la mayoría de taxistas hacen alrededor de 20 viajes al día.\
+Mirando de nuevo las gráficas, en el `ecdf`, el 100% de los valores (taxistas) hacen 60 viajes o menos, y el histograma nos indica lo mismo, por lo que, como máximo, un taxista hace casi 60 viajes.
+
+------------------------------------------------------------------------
+
+> Q: ¿Cuantos viajes se hacen en promedio por un mismo taxi? ¿Qué relación existe con los viajes por los taxistas?
+
+------------------------------------------------------------------------
+
+Para saber los viajes que hace un mismo taxi, hacemos la tabla de frecuencias y pintamos de nuevo las gráficas, esta vez sobre el campo `medallion`, que es el identificador del taxi.
+
+```{r}
+medallion <- as.data.frame(table(df$medallion))
+plot1 <- ggplot(medallion, aes(Freq)) + stat_ecdf()
+plot2 <- ggplot(medallion, aes(Freq)) + geom_histogram(binwidth = 5)
+plot_grid(plot1, plot2, labels = c("ecdf", "hist"))
+```
+
+En promedio, un mismo taxi se hace casi 40 viajes. En el `ecdf` podemos ver que este número está aldededor de 35.
+
+```{r}
+mean(medallion$Freq)
+```
+
+Es casi el doble de viajes de los que hace en promedio un taxista. Esto se debe a que un taxi puede ser conducido por varios taxistas. Teniendo en cuenta que los datos corresponden a un día completo, es lógico pensar que un taxista solo no va a estar todo el día haciendo viajes, por lo que, cuando termine su jornada, lo más seguro es que ese taxi pase a ser conducido por otro taxista.
+
+------------------------------------------------------------------------
+
+> Q: ¿Cuál es el tiempo medio y la distancia media de un carrera?
+
+------------------------------------------------------------------------
+
+```{r}
+# Mean time of a fare
+mean_trip_time <- mean(df$trip_time_in_secs, na.rm=TRUE)
+sprintf("Mean time of a fare: %fs", mean_trip_time)
+# Mean distance of a fare
+mean_trip_distance <- mean(df$trip_distance, na.rm=TRUE)
+sprintf("Mean distance of a fare: %f miles", mean_trip_distance)
+```
+
+El tiempo medio de una carrera es alrededor de 666 segundos, que son unos **11 minutos,** y la distancia media alrededor de 2.82 millas, que serían unos **4.5 km.** Podemos ver que son trayectos relativamente cortos.
+
+------------------------------------------------------------------------
+
+> Q: ¿Cuál es la velocidad media a la que conducen los taxis en Nueva York?
+
+------------------------------------------------------------------------
+
+Para obtener la velocidad media a la que conducen los taxis, podemos dividir la distancia media de una carrera entre el tiempo medio de una carrera, siguiendo la fórmula:  
+  
+$$ v = {s \over t} = {tripdistance \over triptime} $$
+```{r}
+velocity <- mean_trip_distance / mean_trip_time
+sprintf("Mean velocity of a taxi: %f miles/s", velocity)
+```
+
+La velocidad media a la que conducen los taxis es de 0.004239 millas/s, que son **24.55 km/h.** Como podemos ver, es una velocidad relativamente baja. Esto tiene sentido, ya que la ciudad de Nueva York tiene un nivel de tráfico altísimo.
+
+------------------------------------------------------------------------
+
+> Q: ¿Cómo es la distribución del número de pasajeros por viaje?
+
+------------------------------------------------------------------------
+
+```{r}
+passenger_count <- as.data.frame(table(df$passenger_count))
+plot <- ggplot(passenger_count, aes(x=Var1, y=Freq)) + geom_bar(stat="identity")
+plot
+```
+
+Podemos observar que la gran mayoría de viajes han sido realizados con un pasajero. Los viajes de 2 pasajeros son algo más frecuentes que los de 3, 4, 5 o 6 pero, comparados con los de un solo pasajero, no son representativos.
+
+------------------------------------------------------------------------
+
+# Distribución de los viajes
+
+Una de las información clave siempre que analizamos datos geoposicionados es la distribución de los mismos. En este caso, tenemos tanto los puntos de origen como de destino de cada viajes, pudiendo analizar las zonas de la ciudad donde se recogen a los pasajeros y se dejan a los viajeros.
+
+```{r}
+pickup_lonlat <- data.frame(x=df$pickup_longitude, y=df$pickup_latitude)
+plot_pickup <- ggplot(pickup_lonlat) + stat_binhex(aes(x=x, y=y), bins=300) +
+                                        scale_fill_gradientn(colours=c("black","green"))
+
+dropoff_lonlat <- data.frame(x=df$dropoff_longitude, y=df$dropoff_latitude)
+plot_dropoff <- ggplot(dropoff_lonlat) + stat_binhex(aes(x=x, y=y), bins=300) + 
+                                         scale_fill_gradientn(colours=c("black","green"))
+
+plot_grid(plot_pickup, plot_dropoff, labels = c('Pickup', 'Dropoff'))
+```
+
+> Q: ¿Cómo intepretas las diferencias y simulitudes en las distribución de recogidas y bajadas de viajeros?
+
+------------------------------------------------------------------------
+
+Hay una zona muy concurrida en los intervalos x = [-74.05, -73.9] e y = [40.7, 40.8]. Asumimos que esa es la zona más central de NYC. Al haber tantos puntos tanto de origen como de destino, podemos deducir que hay un gran número de trayectos que se realizan dentro de esta zona central.  
+  
+Pero también vemos otras zonas con muchos puntos de destino, lo que quiere decir que la mayoría de la gente coge el taxi en la zona centro y son llevados a zonas más periféricas, donde, probablemente, esté su vivienda.
+
+------------------------------------------------------------------------
+
+# Número de viajes a lo largo del día
+
+De la misma manera, podemos estudiar cómo varía el número de viajes en función de la hora día, obteniendo una aproximación al ciclo vida diario de la ciudad.
+
+```{r}
+dropoffs <- data.frame(time=sort(df$dropoff_datetime))
+dropoff_by_hour <- cut(dropoffs$time, breaks="1 hour", labels=FALSE)-1
+
+ts_dropoff <- dropoffs %>% 
+                mutate(hour = dropoff_by_hour) %>% 
+                group_by(hour) %>% 
+                summarise(freq = length(hour))
+
+ts_dropoff$hour <- as.POSIXct(ts_dropoff$hour*3600, origin = "1970-01-01", tz = "UTC")
+
+ggplot(ts_dropoff, aes(hour, freq)) + geom_line() + 
+        scale_x_datetime(labels = date_format("%k"), 
+                     breaks = date_breaks("1 hour"),
+                     minor_breaks = date_breaks("30 min")) +
+                     xlab("") + ylab("Número de bajadas") 
+```
+
+> Q: Describir este ciclo de actividad de la ciudad, y estudiar la relación que existe con el número de recogidas por hora
+
+------------------------------------------------------------------------
+
+En el gráfico podemos ver cómo el número de bajadas de los taxis empieza siendo decreciente desde el día anterior, y alcanza su punto mínimo entre las 3 y las 4 de la mañana. A partir de las 5, crece de forma exponencial, alcanzando las 10000 bajadas a las 6 de la mañana, alcanzando un máximo relativo a las 9. Hasta aquí, interpretamos que, según llega la madrugada, la mayoría de la gente está en su casa, durmiendo. Ya a partir de las 5-8 de la mañana la gente se despierta para, muy probablemente, ir a trabajar o a hacer turismo. Es por eso la gran subida de la línea alcanzando un máximo a las 9, donde la gente llega a sus trabajos.  
+  
+De 9 a 16 el número de bajadas es menor, estando algo por encima de las 20000. Sigue siendo un número muy elevado, pero no tanto, ya que la gente aprovecha para pasar el día por el centro (bien estando trabajando o desplazándose a pie para hacer turismo), por lo que hay menos afluencia.  
+  
+De 17 a 19 vuelve a crecer rápidamente el número de bajadas, alcanzando su máximo absoluto a las 19. Este número sigue siendo muy alto hasta las 22. Interpretamos que, a estas horas, la gente vuelve a sus casas de trabajar o de hacer turismo, y es un número más elevado que por la mañana ya que la gente puede estar más cansada por la tarde, pudiendo haber ido por la mañana al centro caminando o en transporte público. Este análisis tiene sentido con el que hemos realizado en los gráficos de los puntos de origen y destino, ya que el rango de los puntos de destino es más amplio, correspondiendo esos puntos a la gente que vuelve a sus casas por la tarde y que no ha ido en taxi por la mañana.  
+  
+A partir de las 22 el número de bajadas cae en picado, seguramente, hasta el día siguiente por la mañana, repitiéndose el ciclo. A estas horas la gente ya está en su casa cenando o durmiendo.
+
+------------------------------------------------------------------------
+
+# ¿Cuanto se tarda en llegar al aeropuerto JFK en taxi?
+
+Sin duda, una de las preguntas que muchos turista que visitan Nueva York se hacen con más frecuencia. Y más importante, cómo varía este tiempo según la hora del día.
+
+Lo primero que necesitamos es determinar dónde se encuentra el aeropuerto JFK
+
+> Q: ¿Cual es el *bounding box* de JFK?
+
+```{r}
+jfk_nw <- list(lat = 40.651381, lon = -73.794694)
+jfk_se <- list(lat = 40.640668, lon = -73.776283)
+```
+
+Así podemos obtener todos las recogidas que se producen en un día en JFK
+
+```{r}
+jfk_pickups <- df %>% 
+                    filter(jfk_nw$lon < pickup_longitude & pickup_longitude < jfk_se$lon ) %>%
+                    filter(jfk_se$lat < pickup_latitude & pickup_latitude < jfk_nw$lat)
+```
+
+y todos los taxis que dejan viajeros en el aeropuerto
+
+```{r}
+jfk_dropoffs <- df %>% 
+                    filter(jfk_nw$lon < dropoff_longitude & dropoff_longitude < jfk_se$lon ) %>%
+                    filter(jfk_se$lat < dropoff_latitude & dropoff_latitude < jfk_nw$lat)
+```
+
+Simplemente contando el número de registros en cada uno de los *data_frame* anteriores ya podemos responder a:
+
+> Q: ¿La gente coje el taxi para ir al aeropuerto o para venir del aeropuerto?
+
+------------------------------------------------------------------------
+
+```{r}
+# Number of pickups
+jfk_pickups_count <- nrow(jfk_pickups)
+sprintf("Number of pickups: %d", jfk_pickups_count)
+# Number of dropoffs
+jfk_dropoffs_count <- nrow(jfk_dropoffs)
+sprintf("Number of dropoffs: %d", jfk_dropoffs_count)
+```
+
+El número de recogidas es casi 4 veces mayor que el número de bajadas, por lo que la gente utiliza más el taxi para venir del aeropuerto.
+
+------------------------------------------------------------------------
+
+> Q: ¿Qué porcentaje de los viajes en un día comienza o terminan en el aeropuerto?
+
+------------------------------------------------------------------------
+
+```{r}
+# Total airport fares
+jfk_fares <- jfk_pickups_count + jfk_dropoffs_count
+sprintf("Fares to/from the airport: %f%%", (jfk_fares/n_rows) * 100)
+```
+
+Los viajes que comienzan o terminan en el aeropuerto representan un 2.42% de todos los viajes que se realizan en Nueva York en un día.
+
+------------------------------------------------------------------------
+
+También nos puede interesar a dónde van los taxis desde el aeropuerto, y
+
+```{r}
+jfk_pickup_lonlat <- data.frame(x=jfk_pickups$dropoff_longitude, y=jfk_pickups$dropoff_latitude)
+jfk_plot_pickup <- ggplot(jfk_pickup_lonlat) + stat_binhex(aes(x=x, y=y), bins=300) +
+                                        scale_fill_gradientn(colours=c("black","green"))
+```
+
+desde dónde se cogen taxis hacia el aeropuerto
+
+```{r}
+jfk_dropoff_lonlat <- data.frame(x=jfk_dropoffs$pickup_longitude, y=jfk_dropoffs$pickup_latitude)
+jfk_plot_dropoff <- ggplot(jfk_dropoff_lonlat) + stat_binhex(aes(x=x, y=y), bins=300) + 
+                                         scale_fill_gradientn(colours=c("black","green"))
+```
+
+```{r}
+plot_grid(jfk_plot_pickup, jfk_plot_dropoff, labels = c('To', 'From'))
+```
+
+> Q: ¿Qué diferencias existen entre los viajes que van hace el aeropuerto y los que parten de él?
+
+------------------------------------------------------------------------
+
+Los viajes que van desde el aeropuerto hacia otros sitios (primera gráfica) terminan, muchos en el centro, pero muchos otros también en zonas más periféricas. Esto puede ser debido a que la gente no vive o se aloja en pleno centro de Manhattan y, cuando la gente vuelve de viaje o va de turismo a Nueva York, antes de ir al centro pasará por su alojamiento a dejar su equipaje.  
+  
+Por otro lado, los viajes que van desde la ciudad hasta el aeropuerto (segunda gráfica), salen la mayoría desde el centro de Manhattan. Esto contrasta bastante con la gráfica anterior.
+
+------------------------------------------------------------------------
+
+y, por fin, ¿cuanto se tarda en llegar al aeropuerto? Como la mayoría de los taxi se toman desde Manhattan vamos a tomar esa zona como referencia.
+
+Calculamos el *bounding_box* aproximado:
+
+```{r}
+manh_nw <- list(lat = 40.881333, lon = -74.017639)
+manh_se <- list(lat = 40.700943, lon = -73.910522)
+```
+
+obtenemos todos los viajes desde Manhantan al JFK
+
+```{r}
+trips_manh_jfk <- df %>% 
+                    filter(manh_nw$lon < pickup_longitude & pickup_longitude < manh_se$lon ) %>%
+                    filter(manh_se$lat < pickup_latitude & pickup_latitude < manh_nw$lat) %>%
+                    filter(jfk_nw$lon < dropoff_longitude & dropoff_longitude < jfk_se$lon ) %>%
+                    filter(jfk_se$lat < dropoff_latitude & dropoff_latitude < jfk_nw$lat)
+```
+
+y ya podemos pintar la distribución de cuanto se tarda:
+
+```{r}
+plot1 <- ggplot(trips_manh_jfk, aes(trip_time_in_secs/60)) + stat_ecdf()
+plot2 <- ggplot(trips_manh_jfk, aes(trip_time_in_secs/60)) + geom_histogram(bins = 35)
+plot_grid(plot1, plot2, labels= c("edcd", "hist"))
+```
+
+> Q: ¿La mayor parte de los taxis (95%) que intervalo de tiempos tardan en llegar al JFK?
+
+Puedes emplear la función <code>quantile</code> si quieres calcular exactamente.
+
+------------------------------------------------------------------------
+
+El 95% de los taxis tarda entre 20-45 minutos en llegar al aeropuerto. Esto dependerá del tráfico y de la hora del día que sea, ya que hemos visto que en las horas punta de por la mañana y de por la tarde podemos encontrar hasta 30000 desplazamientos.  
+  
+También podemos observar en el histograma, y en la propia gráfica `ecdf`, que la mayoría de taxis tardan unos 35 minutos en llegar al eropuerto JFK.
+
+------------------------------------------------------------------------
+
+De nuevo, nos interesa ver la distribución de la duración del viaje dependiendo de las horas del día, dado que el tráfico varía sensiblemente. Como dentro de una franja horaria también puede haber una variabilidad elevada, vamos a dibujar los intervalos de confianza además del promedio
+
+```{r}
+dropoff_by_hour <- cut(trips_manh_jfk$dropoff_datetime, breaks="1 hour", labels=FALSE)-1
+
+ts_dropoff <- trips_manh_jfk %>% 
+    mutate(hour = dropoff_by_hour) %>% 
+    group_by(hour) %>% 
+    summarise(q5 = quantile(trip_time_in_secs/60, prob=0.05, na.rm=T),
+              q25 = quantile(trip_time_in_secs/60, prob=0.25, na.rm=T), 
+              q50 = median(trip_time_in_secs/60, na.rm=T), 
+              q75 = quantile(trip_time_in_secs/60, prob=0.75, na.rm=T),
+              q95 = quantile(trip_time_in_secs/60, prob=0.95, na.rm=T))
+
+ts_dropoff$hour <- as.POSIXct(ts_dropoff$hour*3600, origin = "1970-01-01", tz = "UTC")
+ggplot(ts_dropoff, aes(x=hour)) + 
+        geom_line(aes(y=q50, alpha = "  Median   ")) + 
+        geom_ribbon(aes(ymin = q25, ymax = q75, alpha = " 25–75th percentile   ")) +
+        geom_ribbon(aes(ymin = q5, ymax = q95, alpha = "10–90th percentile")) +
+        scale_alpha_manual("", values = c(1, 0.2, 0.2)) +    
+        scale_y_continuous("trip duration in minutes\n") +
+        scale_x_datetime(labels = date_format("%k"), 
+                     breaks = date_breaks("3 hours"),
+                     minor_breaks = date_breaks("1 hour")) +
+        xlab("") + ylab("Min") +
+        ggtitle("Tiempo de viaje desde Manhantan a JFK")
+```
+
+<!-- Nota interna: estos tiempo parecen demasiados pequeños -->
+
+> Q: ¿Cómo explica el ciclo de activida diaria que hemos dibujado antes esta gráfica?
+
+------------------------------------------------------------------------
+
+La forma de la gráfica se parece bastante a la del ciclo de actividad analizado anteriormente. Vemos que los tiempos de carrera más largos coinciden con las horas punta que vimos, sobre las 8-9 de la mañana y las 16-17 de la tarde. Como es de esperar, cuanto más tráfico hay por Manhattan, más tardan los taxis en salir de ahí para llegar al aeropuerto JFK, llegando a un máximo de casi 45 minutos.  
+  
+Sin embargo, de madrugada y entre las 9 de la mañana y las 16 de la tarde, los tiempos son bastante más bajos, de unos 30-35 minutos.  
+  
+Analizando esta gráfica y la de actividad diaria anterior, nos podemos dar cuenta de que el momento del día en el que se coge un taxi en NYC influye mucho en la duración del viaje.
+
+------------------------------------------------------------------------
+
+> Q: ¿Qué franja horario es la que tiene más variabilidad de duración de viaje?
+
+------------------------------------------------------------------------
+
+De 13 a 19 de la tarde, ya que empieza en un tiempo bajo, de unos 30 minutos, y se alcanza en pocas horas el máximo absoluto de casi 45 minutos para, acto seguido, decrecer acusadamente de nuevo a menos de 30 minutos.
+
+------------------------------------------------------------------------
+
+# Nueva York de día y noche
+
+Otro aspecto importante para los turistas es donde se puede descansar y donde se puede salir a tomar algo, y algunos, incluso querrán que tener ambas zonas lo más cercano posible. Para responder a este pregunta tenemos que dividir el conjunto de datos según la hora de día.
+
+> Q: ¿Cuando comienza y termina la actividad diurna?
+
+Para determinar esta estimación puedes emplear gráficas anteriores o ir a buscar a Internet
+
+```{r}
+# Incluir tu estimación propia de cada umbral (0-23)
+start_daytime <- 6
+end_daytime <- 20
+```
+
+Partimos el *dataset* en viajes nocturnos y diurnos
+
+```{r}
+daytime <- df %>% filter(start_daytime <= hour(pickup_datetime) & hour(pickup_datetime) < end_daytime)
+nighttime <- df %>% filter(! (start_daytime <= hour(pickup_datetime) & hour(pickup_datetime) < end_daytime))
+```
+
+y pintamos la distribución de los puntos partida de los taxis según el momento del día
+
+```{r}
+daytime_plot <- ggplot(daytime) + stat_binhex(aes(x=pickup_longitude, y=pickup_latitude), bins=300) + 
+                                         scale_fill_gradientn(colours=c("gray","black"))
+nighttime_plot <- ggplot(nighttime) + stat_binhex(aes(x=pickup_longitude, y=pickup_latitude), bins=300) + 
+                                         scale_fill_gradientn(colours=c("gray","black"))
+
+plot_grid(daytime_plot, nighttime_plot, labels = c("day", "night"))
+```
+
+> Q: ¿Qué diferencias y similitudes existe entre el horario diurno y nocturno?
+
+------------------------------------------------------------------------
+
+La forma de las gráficas es prácticamente la misma, por lo que los taxis hacen el mismo tipo de trayectos, recogiendo a los pasajeros en los mismos sitios. Por esa parte no encontramos diferencias.  
+  
+La principal diferencia la vemos en el número de recogidas, siendo mucho más grande de día, con más de 2000 en ciertos puntos, frente a un máximo de 800 en un mismo punto por la noche.
+
+------------------------------------------------------------------------
+
+# Parte de desarrollo propio
+
+La última parte de la práctica consiste en realizar un desarrollo propio en el que se van a combinar un nuevo conjunto de datos con los ya existente.
+
+Desde esta URL:
+
+<https://www.dropbox.com/s/lowbxfx2uohlxy3/All_Starbucks_Locations_in_the_US_2013.csv?dl=1>
+
+te puedes bajar todas las ubicaciones que tenían los Starbucks de Estados Unidos en el año 2013. Se pide estimar los *cinco Starbucks* que tienen más clientes a partir de la actividad de los taxis.
+
+------------------------------------------------------------------------
+
+Incluir aquí el código que genera la respuesta
+
+------------------------------------------------------------------------
