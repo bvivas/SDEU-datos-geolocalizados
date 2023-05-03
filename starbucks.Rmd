@@ -1,0 +1,199 @@
+---
+title: "Starbucks más Frecuentados"
+author: "Martín Salinas Antón y Belén Vivas García"
+date: "12 Mayo de 2023"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+  html_notebook: default
+---
+
+```{r global_options, include=FALSE}
+rm(list=ls()) 
+library(knitr)
+opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+# Inicialización
+
+El siguiente código ha sido probado con `r R.version.string` y RStudio 1.2.240
+
+Primeramente, es necesario cargar todas las bibliotecas que se van a emplear durante el proyecto.
+
+```{r results="hide"}
+library(tidyverse)
+library(cowplot)
+library(hexbin)
+library(lubridate)
+library(scales)
+
+#theme_set(theme_cowplot(font_size=12)) # reduce default font size
+```
+
+Recordar que es preciso instalar previamente aquellas bibliotecas que no estuvieran disponibles. Por ejemplo:
+
+```         
+install.packages("tidyverse")
+```
+
+Cargamos también funciones que nos son útiles en la última parte de la práctica. La función permite `gcd_slc` calcula la distancia geodésica entre dos puntos definidos en coordenadas cartesianas. Precisa de la función `deg2rad` para convertir dichas coordenadas de grados a radianes.
+
+```{r results="hide"}
+# source: https://www.r-bloggers.com/great-circle-distance-calculations-in-r/
+# Convert degrees to radians
+deg2rad <- function(deg) {
+    return(deg*pi/180)
+}
+
+# Calculates the great-circle distance (gdc), also called geodesic distance, 
+# between two points specified by radian latitude/longitude using the Spherical 
+# Law of Cosines (slc) The Spherical Law of Cosines performs well as long as the
+# distance is not to small (some sources claim it’s accuracy deteriorates at
+# about the 1 metre scale). 
+# Return distance in Km
+gcd_slc <- function(long1, lat1, long2, lat2) {
+    # Convert degrees to radians
+    long1 <- deg2rad(long1)
+    lat1 <- deg2rad(lat1)
+    long2 <- deg2rad(long2)
+    lat2 <- deg2rad(lat2)
+    
+    R <- 6371 # Earth mean radius [km]
+    d <- acos(sin(lat1)*sin(lat2) + cos(lat1)*cos(lat2) * cos(long2-long1)) * R
+    return(d) # Distance in km
+}
+```
+
+# Dataset taxis de Nueva York
+
+El conjunto de datos que vamos a utilizar contiene los viajes realizados el día 14 de enero de 2013, y se puede descargar desde:
+
+<https://www.dropbox.com/s/nmtodtuvpb8f87d/trip_data_2013-01-14.csv?dl=1>
+
+```{r}
+taxis_df <- read_csv("data/trip_data_2013-01-14.csv")
+```
+
+```{r}
+# Incluir las coordenadas correspondientes, y ejecutar el trozo de código
+nw <- list(lat = 40.917577, lon = -74.259090)
+se <- list(lat = 40.477399, lon = -73.700272)
+```
+
+Una vez definido el *bounding box* se sustituye por <code>NA</code> cualquier coordenada que se encuentre fuera.
+
+```{r}
+# set coordinates outside of NYC bounding box to NA
+taxis_df <- taxis_df %>% 
+        mutate(pickup_longitude = replace(pickup_longitude,
+                                           which(pickup_longitude < nw$lon 
+                                                 | pickup_longitude > se$lon),
+                                           NA)) %>%
+        mutate(pickup_latitude = replace(pickup_latitude,
+                                           which(pickup_latitude < se$lat 
+                                                 | pickup_latitude > nw$lat),
+                                           NA)) %>%
+        mutate(dropoff_longitude = replace(dropoff_longitude,
+                                           which(dropoff_longitude < nw$lon 
+                                                 | dropoff_longitude > se$lon),
+                                           NA)) %>%
+        mutate(dropoff_latitude = replace(dropoff_latitude,
+                                           which(dropoff_latitude < se$lat 
+                                                 | dropoff_latitude > nw$lat),
+                                           NA))
+```
+
+```{r}
+taxis_df <- taxis_df %>%
+  # Trip distance greater than 0
+  mutate(trip_distance = replace(trip_distance,
+                                 which(trip_distance <= 0),
+                                 NA)) %>%
+  # Trip time in secs greater than 0
+  mutate(trip_time_in_secs = replace(trip_time_in_secs,
+                                     which(trip_time_in_secs <= 0),
+                                     NA)) %>%
+  # Rate code greater than 0
+  mutate(rate_code = replace(rate_code,
+                             which(rate_code <= 0),
+                             NA)) %>%
+  # Passenger count between 1 and 6
+  mutate(passenger_count = replace(passenger_count,
+                                   which(passenger_count < 1
+                                         | passenger_count > 6),
+                                   NA))
+```
+
+Eliminamos el atributo *store_and_fwd_flag* ya que tiene un número elevado de <code>NA</code>, y además no sabemos interpretar.
+
+```{r}
+taxis_df <- taxis_df %>% select(-store_and_fwd_flag)
+table(complete.cases(taxis_df))
+```
+
+# Parte de desarrollo propio
+
+La última parte de la práctica consiste en realizar un desarrollo propio en el que se van a combinar un nuevo conjunto de datos con los ya existente.
+
+Desde esta URL:
+
+<https://www.dropbox.com/s/lowbxfx2uohlxy3/All_Starbucks_Locations_in_the_US_2013.csv?dl=1>
+
+te puedes bajar todas las ubicaciones que tenían los Starbucks de Estados Unidos en el año 2013. Se pide estimar los *cinco Starbucks* que tienen más clientes a partir de la actividad de los taxis.
+
+------------------------------------------------------------------------
+
+```{r}
+starbucks_df <- read_csv("data/All_Starbucks_Locations_in_the_US_2013.csv")
+```
+
+Primero nos quedamos con los Starbucks que estén únicamente dentro de los límites de NYC.
+
+```{r}
+starbucks_nyc <- starbucks_df %>% 
+                    filter(nw$lon < Longitude & Longitude < se$lon ) %>%
+                    filter(se$lat < Latitude & Latitude < nw$lat)
+```
+
+Podríamos haber filtrado directamente por el campo State y quedarnos sólo con los de NY, pero tendríamos que acotar aún más, ya que no queremos todos los del estado de Nueva York, sino los de la ciudad de Nueva York.
+
+```{r}
+ggplot(starbucks_nyc, aes(x = Longitude, y = Latitude)) + geom_point() + 
+  ggtitle("NYC Starbucks") +
+  xlab("Longitude") +
+  ylab("Latitude")
+```
+
+Vemos que la mayoría de Starbucks están en la zona de Manhattan.
+
+```{r}
+taxis_df <- na.omit(taxis_df, cols=c('pickup_longitude', 'pickup_latitude', 'dropoff_longitude', 'dropoff_latitude'))
+
+starbucks_taxi_dist <- function(taxi_lon, taxi_lat, starbucks_lon, starbucks_lat) {
+  gcd_slc(taxi_lon, taxi_lat, starbucks_lon, starbucks_lat)
+}
+
+taxis_df$dropoff_dist <- apply(taxis_df, 1, function(x) {
+  min(starbucks_taxi_dist(as.numeric(x[['dropoff_longitude']]), as.numeric(x[['dropoff_latitude']]), as.numeric(starbucks_nyc$Longitude), as.numeric(starbucks_nyc$Latitude)))
+})
+
+threshold <- 0.05
+starbucks_nyc$visit_count <- apply(starbucks_nyc, 1, function(x) {
+  sum(as.numeric(taxis_df$dropoff_dist) <= threshold)
+})
+
+starbucks_5 <- head(starbucks_nyc[order(
+  starbucks_nyc$visit_count, 
+  decreasing = TRUE), ]
+  , 5)
+```
+
+```{r}
+ggplot(starbucks_5, aes(x = Longitude, y = Latitude)) + geom_point() + 
+  ggtitle("NYC 5 most frequented Starbucks") +
+  xlab("Longitude") +
+  ylab("Latitude")
+```
+
+------------------------------------------------------------------------
