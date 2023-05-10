@@ -151,6 +151,7 @@ starbucks_df <- read_csv("data/All_Starbucks_Locations_in_the_US_2013.csv")
 Primero nos quedamos con los Starbucks que estén únicamente dentro de los límites de NYC.
 
 ```{r}
+# Starbucks in NYC
 starbucks_nyc <- starbucks_df %>% 
                     filter(nw$lon < Longitude & Longitude < se$lon ) %>%
                     filter(se$lat < Latitude & Latitude < nw$lat)
@@ -168,32 +169,58 @@ ggplot(starbucks_nyc, aes(x = Longitude, y = Latitude)) + geom_point() +
 Vemos que la mayoría de Starbucks están en la zona de Manhattan.
 
 ```{r}
+# Drop NA values from coordinates
 taxis_df <- na.omit(taxis_df, cols=c('pickup_longitude', 'pickup_latitude', 'dropoff_longitude', 'dropoff_latitude'))
 
+# Calculates distance between taxis and starbucks coordinates
 starbucks_taxi_dist <- function(taxi_lon, taxi_lat, starbucks_lon, starbucks_lat) {
   gcd_slc(taxi_lon, taxi_lat, starbucks_lon, starbucks_lat)
 }
-
-taxis_df$dropoff_dist <- apply(taxis_df, 1, function(x) {
-  min(starbucks_taxi_dist(as.numeric(x[['dropoff_longitude']]), as.numeric(x[['dropoff_latitude']]), as.numeric(starbucks_nyc$Longitude), as.numeric(starbucks_nyc$Latitude)))
-})
-
-threshold <- 0.05
-starbucks_nyc$visit_count <- apply(starbucks_nyc, 1, function(x) {
-  sum(as.numeric(taxis_df$dropoff_dist) <= threshold)
-})
-
-starbucks_5 <- head(starbucks_nyc[order(
-  starbucks_nyc$visit_count, 
-  decreasing = TRUE), ]
-  , 5)
 ```
 
+Añadimos una columna en el dataframe de los taxis con el ID del Starbucks más cercano al punto de bajada. Esto lo hacemos calculando las distancias mínimas de los puntos de bajada con los Starbucks más cercanos, utilizando la función `starbucks_taxi_dist` definida anteriormente, la cual realiza el cálculo llamando a `gcd_slc`.
+
 ```{r}
-ggplot(starbucks_5, aes(x = Longitude, y = Latitude)) + geom_point() + 
+# New column with the closest starbucks to the dropoff point
+taxis_df$closest_starbucks <- apply(taxis_df, 1, function(x) {
+  starbucks_nyc[['Facility ID']][which.min(starbucks_taxi_dist(as.numeric(x[['dropoff_longitude']]), as.numeric(x[['dropoff_latitude']]), as.numeric(starbucks_nyc$Longitude), as.numeric(starbucks_nyc$Latitude)))]
+})
+```
+
+Calculamos la frecuencia con la que aparece cada Starbucks en la nueva columna, y tomaremos los 5 más frecuentes como solución al problema.
+
+```{r}
+# Frequency dataframe
+starbucks_freq <- as.data.frame(table(taxis_df$closest_starbucks))
+starbucks_freq <- starbucks_freq[order(starbucks_freq$Freq, decreasing = TRUE), ]
+
+# Take 5 first Starbucks
+starbucks_freq_5 <- starbucks_freq[1:5, ]
+# Rename variable
+starbucks_freq_5 <- starbucks_freq_5 %>%
+  rename(ID = Var1)
+
+# Retrieve latitude and longitude from those Starbucks
+top_5_starbucks <- starbucks_nyc %>%
+  filter(`Facility ID` %in% starbucks_freq_5$ID) %>%
+  select(`Facility ID`, Name, Latitude, Longitude)
+```
+
+Finalmente, graficamos los puntos donde se encuentran estos Starbucks.
+
+```{r}
+ggplot(top_5_starbucks, aes(x = Longitude, y = Latitude)) + geom_point() + 
   ggtitle("NYC 5 most frequented Starbucks") +
   xlab("Longitude") +
   ylab("Latitude")
 ```
+
+Y sus nombres:
+
+```{r}
+top_5_starbucks$Name
+```
+
+Como podemos ver, se encuentran en un rango de longitud y latitud dentro de los límites de Manhattan. Tiene sentido, ya que Manhattan es la zona más transitada y donde más taxis paran y, por tanto, donde más gente pasará por un Starbucks al bajarse del taxi.
 
 ------------------------------------------------------------------------
