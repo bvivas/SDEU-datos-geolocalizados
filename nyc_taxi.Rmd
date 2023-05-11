@@ -621,3 +621,96 @@ La forma de las gráficas es prácticamente la misma, por lo que los taxis hacen
 La principal diferencia la vemos en el número de recogidas, siendo mucho más grande de día, con más de 2000 en ciertos puntos, frente a un máximo de 800 en un mismo punto por la noche.
 
 ------------------------------------------------------------------------
+
+# Parte de desarrollo propio
+
+La última parte de la práctica consiste en realizar un desarrollo propio en el que se van a combinar un nuevo conjunto de datos con los ya existente.
+
+Desde esta URL:
+
+<https://www.dropbox.com/s/lowbxfx2uohlxy3/All_Starbucks_Locations_in_the_US_2013.csv?dl=1>
+
+te puedes bajar todas las ubicaciones que tenían los Starbucks de Estados Unidos en el año 2013. Se pide estimar los *cinco Starbucks* que tienen más clientes a partir de la actividad de los taxis.
+
+------------------------------------------------------------------------
+
+```{r}
+starbucks_df <- read_csv("data/All_Starbucks_Locations_in_the_US_2013.csv")
+```
+
+Primero nos quedamos con los Starbucks que estén únicamente dentro de los límites de NYC.
+
+```{r}
+# Starbucks in NYC
+starbucks_nyc <- starbucks_df %>% 
+                    filter(nw$lon < Longitude & Longitude < se$lon ) %>%
+                    filter(se$lat < Latitude & Latitude < nw$lat)
+```
+
+Podríamos haber filtrado directamente por el campo State y quedarnos sólo con los de NY, pero tendríamos que acotar aún más, ya que no queremos todos los del estado de Nueva York, sino los de la ciudad de Nueva York.
+
+```{r}
+ggplot(starbucks_nyc, aes(x = Longitude, y = Latitude)) + geom_point() + 
+  ggtitle("NYC Starbucks") +
+  xlab("Longitude") +
+  ylab("Latitude")
+```
+
+Vemos que la mayoría de Starbucks están en la zona de Manhattan.
+
+```{r}
+# Drop NA values from coordinates in taxis df
+df <- na.omit(df, cols=c('pickup_longitude', 'pickup_latitude', 'dropoff_longitude', 'dropoff_latitude'))
+
+# Calculates distance between taxis and Starbucks coordinates
+starbucks_taxi_dist <- function(taxi_lon, taxi_lat, starbucks_lon, starbucks_lat) {
+  gcd_slc(taxi_lon, taxi_lat, starbucks_lon, starbucks_lat)
+}
+```
+
+Añadimos una columna en el dataframe de los taxis con el ID del Starbucks más cercano al punto de bajada. Esto lo hacemos calculando las distancias mínimas de los puntos de bajada con los Starbucks más cercanos, utilizando la función `starbucks_taxi_dist` definida anteriormente, la cual realiza el cálculo llamando a `gcd_slc`.
+
+```{r}
+# New column with the closest starbucks to the dropoff point
+df$closest_starbucks <- apply(df, 1, function(x) {
+  starbucks_nyc[['Facility ID']][which.min(starbucks_taxi_dist(as.numeric(x[['dropoff_longitude']]), as.numeric(x[['dropoff_latitude']]), as.numeric(starbucks_nyc$Longitude), as.numeric(starbucks_nyc$Latitude)))]
+})
+```
+
+Calculamos la frecuencia con la que aparece cada Starbucks en la nueva columna, y tomaremos los 5 más frecuentes como solución al problema.
+
+```{r}
+# Frequency dataframe
+starbucks_freq <- as.data.frame(table(df$closest_starbucks))
+starbucks_freq <- starbucks_freq[order(starbucks_freq$Freq, decreasing = TRUE), ]
+
+# Take 5 first Starbucks
+starbucks_freq_5 <- starbucks_freq[1:5, ]
+# Rename variable
+starbucks_freq_5 <- starbucks_freq_5 %>%
+  rename(ID = Var1)
+
+# Retrieve latitude and longitude from those Starbucks
+top_5_starbucks <- starbucks_nyc %>%
+  filter(`Facility ID` %in% starbucks_freq_5$ID) %>%
+  select(`Facility ID`, Name, Latitude, Longitude)
+```
+
+Finalmente, graficamos los puntos donde se encuentran estos Starbucks.
+
+```{r}
+ggplot(top_5_starbucks, aes(x = Longitude, y = Latitude)) + geom_point() + 
+  ggtitle("NYC 5 most frequented Starbucks") +
+  xlab("Longitude") +
+  ylab("Latitude")
+```
+
+Y sus nombres:
+
+```{r}
+top_5_starbucks$Name
+```
+
+Como podemos ver, se encuentran en un rango de longitud y latitud dentro de los límites de Manhattan. Tiene sentido, ya que Manhattan es la zona más transitada y donde más taxis paran y, por tanto, donde más gente pasará por un Starbucks al bajarse del taxi.
+
+------------------------------------------------------------------------
