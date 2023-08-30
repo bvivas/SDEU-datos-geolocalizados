@@ -41,4 +41,5 @@ Será necesaio crear el directorio `/data` e introducir ahí los ficheros de dat
 
 ## Créditos
 [Belén Vivas García](https://github.com/bvivas)  
-[Martín Salinas Antón](https://github.com/MartinSalinas98)
+[Martín Salinas Antón](https://github.com/MartinSalinas98)  
+[phaya - Real Life Analytics](https://github.com/phaya/real-life-analytics) (base)
