@@ -9,6 +9,7 @@ En este proyecto se analizan los datos relativos a los trayectos realizados por 
 
 - [Instalación](#instalación)
 - [Datasets](#datasets)
+- [Ejecución](#ejecución)
 - [Créditos](#créditos)
 
 ## Instalación
