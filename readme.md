@@ -1,6 +1,6 @@
 # Datos Geolocalizados - SDEU
 
-Práctica de Datos Geolocalizados de la asignatura Sistemas Distribuidos, Empotrados y Ubicuos, EPS-UAM.  
+Práctica de Datos Geolocalizados de Sistemas Distribuidos, Empotrados y Ubicuos, EPS-UAM.  
 Basado en [phaya - Real Life Analytics](https://github.com/phaya/real-life-analytics).  
 
 En este proyecto se analizan los datos relativos a los trayectos realizados por los taxis en la ciudad de Nueva York durante el 14 de enero de 2013, extrayéndose conclusiones acerca de los hábitos de movilidad de esta población (trayectos más frecuentes, horas punta, lugares más demandados...). Por otra parte, se buscan los Starbucks más frecuentados de la ciudad en función de los viajes previamente analizados.
